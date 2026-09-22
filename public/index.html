@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fake News Checker — Verify Before You Share</title>
+  <meta name="description" content="Conversational AI assistant that walks you step-by-step through verifying news, claims, and screenshots before you share them.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="header-branding">
+        <div class="logo-badge">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="m9 12 2 2 4-4"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="brand-title">Fake News Checker</h1>
+          <p class="brand-subtitle">Verify claims step-by-step before you share</p>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <button id="testCasesBtn" class="btn btn-secondary btn-sm" title="Explore sample test scenarios">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m9 18 6-6-6-6"/>
+          </svg>
+          Test Scenarios
+        </button>
+        <button id="resetSessionBtn" class="btn btn-secondary btn-sm" title="Start a new check">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+          Check Another
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="main-layout">
+      <!-- Left / Top Checklist Tracker -->
+      <aside class="checklist-sidebar" id="checklistSidebar">
+        <div class="sidebar-header">
+          <h2 class="sidebar-title">Verification Steps</h2>
+          <span class="step-counter" id="stepCounter">Step 1 of 5</span>
+        </div>
+
+        <ol class="step-list">
+          <li class="step-item active" data-step="1">
+            <div class="step-indicator">1</div>
+            <div class="step-info">
+              <span class="step-name">Intake & Source</span>
+              <span class="step-status">Outlet credibility & URL check</span>
+            </div>
+          </li>
+          <li class="step-item" data-step="2">
+            <div class="step-indicator">2</div>
+            <div class="step-info">
+              <span class="step-name">Author & Date</span>
+              <span class="step-status">Byline & recirculation check</span>
+            </div>
+          </li>
+          <li class="step-item" data-step="3">
+            <div class="step-indicator">3</div>
+            <div class="step-info">
+              <span class="step-name">Cross-Verification</span>
+              <span class="step-status">Independent reporting comparison</span>
+            </div>
+          </li>
+          <li class="step-item" data-step="4">
+            <div class="step-indicator">4</div>
+            <div class="step-info">
+              <span class="step-name">Evidence & Language</span>
+              <span class="step-status">Primary sources & emotional tone</span>
+            </div>
+          </li>
+          <li class="step-item" data-step="5">
+            <div class="step-indicator">5</div>
+            <div class="step-info">
+              <span class="step-name">Verdict & Share Advice</span>
+              <span class="step-status">Confidence & recommendation</span>
+            </div>
+          </li>
+        </ol>
+
+        <!-- Visual Search Assist Card -->
+        <div class="reverse-search-card">
+          <div class="reverse-header">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="m10 15 5-3-5-3v6z"/>
+            </svg>
+            <strong>Image & Visual Checks</strong>
+          </div>
+          <p class="reverse-text">Got a screenshot or viral photo? Use reverse image tools to trace the original date & context:</p>
+          <div class="reverse-links">
+            <a href="https://images.google.com" target="_blank" rel="noopener noreferrer" class="link-chip">Google Images ↗</a>
+            <a href="https://tineye.com" target="_blank" rel="noopener noreferrer" class="link-chip">TinEye ↗</a>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Central Chat Thread -->
+      <section class="chat-section">
+        <!-- Quick Test Cases Bar (collapsible) -->
+        <div class="test-cases-drawer" id="testCasesDrawer">
+          <div class="test-drawer-header">
+            <span class="test-drawer-title">⚡ Quick Test Scenarios (from spec)</span>
+            <button class="close-drawer-btn" id="closeDrawerBtn">&times;</button>
+          </div>
+          <div class="test-chips-grid" id="testChipsContainer">
+            <!-- Injected via JavaScript -->
+          </div>
+        </div>
+
+        <!-- Message List -->
+        <div class="chat-messages" id="chatMessages" role="log" aria-live="polite">
+          <!-- Chat messages dynamically rendered here -->
+        </div>
+
+        <!-- Quick Reply Options Area -->
+        <div class="quick-replies-container" id="quickRepliesContainer"></div>
+
+        <!-- Chat Input Form -->
+        <footer class="chat-input-wrapper">
+          <!-- Image Attachment Preview Bar -->
+          <div class="attachment-preview" id="attachmentPreview" style="display: none;">
+            <div class="preview-content">
+              <img id="previewImg" src="" alt="Screenshot preview">
+              <span class="preview-name" id="previewFileName">screenshot.png</span>
+            </div>
+            <button type="button" class="remove-attachment-btn" id="removeAttachmentBtn" title="Remove image">&times;</button>
+          </div>
+
+          <form id="chatForm" class="chat-form">
+            <label for="imageFileInput" class="file-upload-btn" title="Attach screenshot or photo">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
+                <circle cx="9" cy="9" r="2"/>
+                <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+              </svg>
+              <input type="file" id="imageFileInput" accept="image/*" style="display: none;">
+            </label>
+
+            <textarea
+              id="messageInput"
+              class="message-textarea"
+              placeholder="Paste a headline, link, claim, or screenshot (Ctrl+V)..."
+              rows="1"
+              required
+            ></textarea>
+
+            <button type="submit" id="sendBtn" class="send-btn" title="Send message">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </form>
+
+          <!-- Disclaimer in footer as requested -->
+          <div class="chat-disclaimer">
+            This tool assists with verification but is not a substitute for professional fact-checking. Always use your own judgment.
+          </div>
+        </footer>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast" role="alert" aria-live="assertive"></div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
