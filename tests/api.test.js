@@ -47,8 +47,8 @@ test('POST /api/chat processes intake and returns guided response', async () => 
   assert.equal(res.status, 200);
   const data = await res.json();
   assert.ok(data.reply);
-  assert.equal(data.stage, 'SOURCE_CHECK');
-  assert.ok(data.reply.content.includes('Step 1 — Source Check'));
+  assert.equal(data.stage, 'CLARIFICATION');
+  assert.ok(data.reply.content.includes('question'));
 });
 
 test('POST /api/reset returns initial opening message', async () => {

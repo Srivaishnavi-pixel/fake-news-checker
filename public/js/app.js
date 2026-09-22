@@ -350,7 +350,7 @@ function renderQuickReplies(replies) {
  */
 function updateStepIndicator(stepIndex) {
   state.currentStep = stepIndex;
-  stepCounter.textContent = `Step ${stepIndex} of 5`;
+  stepCounter.textContent = `Step ${stepIndex} of 2`;
 
   const steps = document.querySelectorAll('.step-item');
   steps.forEach((step, idx) => {

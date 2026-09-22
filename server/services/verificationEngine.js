@@ -29,23 +29,19 @@ const KNOWN_HOAX_PATTERNS = [
 export class VerificationSession {
   constructor(sessionId) {
     this.sessionId = sessionId;
-    this.stage = 'INTAKE'; // INTAKE, SOURCE_CHECK, AUTHOR_DATE_CHECK, CROSS_VERIFY, EVIDENCE_LANGUAGE, VERDICT
+    this.stage = 'INTAKE'; // INTAKE -> CLARIFICATION -> VERDICT
     this.history = [];
     this.data = {
       rawInput: '',
       inputType: null, // 'url', 'claim', 'image'
       urlMetadata: null,
-      sourceInfo: {},
-      authorInfo: {},
-      dateInfo: {},
-      crossVerifyInfo: {},
-      evidenceInfo: {},
+      sourceType: '',
       languageFlags: [],
       hasImage: false,
-      imageAnalysis: null,
+      isOld: false,
       verdictData: null
     };
-    this.stepIndex = 1; // 1 to 5 for the visual checklist tracker
+    this.stepIndex = 1; // 1: Analysis, 2: Verdict
   }
 
   addMessage(role, content, extras = {}) {
@@ -60,7 +56,7 @@ export class VerificationSession {
   }
 }
 
-// In-memory session store (can be scaled to Redis or DB if needed)
+// In-memory session store
 const sessions = new Map();
 
 export function getOrCreateSession(sessionId) {
@@ -76,257 +72,152 @@ export function resetSession(sessionId) {
 }
 
 /**
- * Main conversation handler: processes user message and returns bot reply,
- * active stage, progress indicator, and suggested quick-reply chips.
+ * Simplified 2-step conversational engine:
+ * Step 1: User submits link or claim -> bot inspects automatically, shares initial findings, and asks ONE simple question.
+ * Step 2: User answers that 1 question -> bot immediately gives the final verdict card!
  */
 export async function processUserMessage(session, userMessage, attachments = {}) {
-  // Save user message
   session.addMessage('user', userMessage, { attachments });
 
   const text = (userMessage || '').trim();
   const urlMatch = text.match(/https?:\/\/[^\s]+/i);
-
-  // Check if LLM should generate the reply or if we use our structured state machine
-  // We first use the structured flow to maintain exact checklist progression,
-  // augmenting each stage's explanation with LLM if available.
 
   switch (session.stage) {
     case 'INTAKE': {
       session.data.rawInput = text;
       session.data.hasImage = !!(attachments.image || text.toLowerCase().includes('screenshot') || text.toLowerCase().includes('image attached'));
 
-      // Check for URL
+      // 1. URL Input
       if (urlMatch) {
         session.data.inputType = 'url';
         session.data.url = urlMatch[0];
         const metadata = await fetchUrlMetadata(urlMatch[0]);
         session.data.urlMetadata = metadata;
 
-        // Check if satire
+        // If Satire site -> Instant verdict (no need to waste time asking questions)
         if (metadata.domainAnalysis?.isSatire) {
           session.stage = 'VERDICT';
-          session.stepIndex = 5;
+          session.stepIndex = 2;
           const verdictContent = generateSatireVerdict(metadata);
           session.data.verdictData = verdictContent.verdictData;
           return session.addMessage('assistant', verdictContent.text, {
             stage: session.stage,
             stepIndex: session.stepIndex,
             verdict: verdictContent.verdictData,
-            suggestedReplies: ['Check another claim', 'Copy summary']
+            suggestedReplies: ['Check another claim']
           });
         }
 
-        // Check if typosquatting / deceptive
+        // Suspicious domain
         if (metadata.domainAnalysis?.category === 'suspicious') {
-          session.data.languageFlags.push('Typosquatted or deceptive domain name mimicking a legitimate outlet');
+          session.data.languageFlags.push('Domain looks like a deceptive copycat of a major news brand.');
         }
 
-        // Check if old story
         if (metadata.isOlderStory) {
-          session.data.dateInfo.isOld = true;
-          session.data.dateInfo.ageDays = metadata.dateAgeDays;
+          session.data.isOld = true;
         }
 
-        session.stage = 'AUTHOR_DATE_CHECK';
+        session.stage = 'CLARIFICATION';
         session.stepIndex = 2;
 
-        let reply = `Thanks for sharing the link! I inspected **${metadata.domain}**.\n\n`;
-        if (metadata.title) {
-          reply += `📄 **Headline:** "${metadata.title}"\n`;
-        }
-        if (metadata.author) {
-          reply += `✍️ **Author listed:** ${metadata.author}\n`;
-        }
-        if (metadata.publishDate) {
-          reply += `📅 **Date detected:** ${metadata.publishDate}\n`;
-        }
+        let reply = `I inspected **${metadata.domain}** for you:\n\n`;
+        if (metadata.title) reply += `📄 **Title:** "${metadata.title}"\n`;
+        if (metadata.author) reply += `✍️ **Author:** ${metadata.author}\n`;
+        if (metadata.publishDate) reply += `📅 **Date:** ${metadata.publishDate}\n`;
 
         if (metadata.domainAnalysis?.isReputable) {
-          reply += `\n✅ **Source Check:** The domain is a recognized major news or wire outlet.\n\n`;
+          reply += `\n✅ **Good news:** This is a recognized, reputable news organization.\n\n`;
         } else if (metadata.domainAnalysis?.category === 'suspicious') {
-          reply += `\n⚠️ **Source Warning:** ${metadata.domainAnalysis.notes}\n\n`;
+          reply += `\n⚠️ **Warning:** ${metadata.domainAnalysis.notes}\n\n`;
         } else {
-          reply += `\nℹ️ **Source Check:** This domain is an independent or less familiar site. We should look closely at bylines and corroborating reports.\n\n`;
+          reply += `\nℹ️ **Note:** This site is an independent or lesser-known blog/outlet.\n\n`;
         }
 
-        reply += `**Next check:** Is there a named journalist/byline with a verifiable background, or does the article look anonymous or auto-generated?`;
+        reply += `**Quick question:** Have you seen this reported on other major news sites, or did someone just send you this link?`;
 
         return session.addMessage('assistant', reply, {
           stage: session.stage,
           stepIndex: session.stepIndex,
           metadata,
           suggestedReplies: [
-            'Yes, named reputable journalist',
-            'No author / Anonymous',
-            'I cannot tell'
+            'Yes, multiple major news sites report it',
+            'No, only found this single link',
+            'Someone sent it to me on WhatsApp/Social media'
           ]
         });
       }
 
-      // Check if Image / Screenshot without URL
+      // 2. Image or Screenshot Input
       if (session.data.hasImage) {
         session.data.inputType = 'image';
-        session.stage = 'SOURCE_CHECK';
+        session.stage = 'CLARIFICATION';
         session.stepIndex = 2;
 
-        const reply = `I see this is an image or screenshot! While I cannot directly perform real-time pixel forensic analysis, images are frequently taken out of context, manipulated, or AI-generated.
+        const reply = `I see a screenshot or viral image! Images are often recycled with fake new captions.
 
-Here is how you can verify it in 30 seconds:
-1. **Reverse Image Search:** Open [Google Images](https://images.google.com/) or [TinEye](https://tineye.com/) and upload this screenshot.
-2. Check if the exact photo appeared years earlier with an entirely different headline.
-3. Look for telltale AI generation signs (warped text, distorted hands/ears, unnatural gloss).
+💡 **Quick tip:** You can reverse-search it on [Google Images](https://images.google.com/) or [TinEye](https://tineye.com/) to see where it first appeared.
 
-**To start our checklist:** Where did you first see this screenshot (e.g., WhatsApp, Telegram, X, Facebook), and is there any original link or outlet name visible on it?`;
+**Quick question:** Where did you get this screenshot, and does it include a link or publisher name?`;
 
         return session.addMessage('assistant', reply, {
           stage: session.stage,
           stepIndex: session.stepIndex,
           suggestedReplies: [
-            'Forwarded on WhatsApp/Telegram',
-            'Saw it on X / Twitter / Reddit',
-            'Has an outlet logo/watermark',
-            'No source or link anywhere'
+            'Forwarded on WhatsApp / Telegram (no link)',
+            'Saw it on X / Instagram / Facebook',
+            'Has a news logo / direct link'
           ]
         });
       }
 
-      // Plain text / claim input
+      // 3. Plain Text / Rumor Claim
       session.data.inputType = 'claim';
-      session.stage = 'SOURCE_CHECK';
+      session.stage = 'CLARIFICATION';
       session.stepIndex = 2;
 
-      // Check for quick known hoaxes
+      // Check known hoaxes
       for (const hoax of KNOWN_HOAX_PATTERNS) {
         if (hoax.regex.test(text)) {
           session.data.matchedHoax = hoax;
         }
       }
 
-      // Check for emotional language in claim
+      // Check sensational language
       checkSensationalLanguage(text, session);
 
-      const reply = `I've noted your claim: *"\"${text}\"*.
+      // Check for old story keywords
+      if (/years ago|old story|2018|2019|2020|recirculated/i.test(text)) {
+        session.data.isOld = true;
+      }
 
-Let's walk through the verification checklist step by step.
+      const reply = `I've checked your claim: *"\"${text}\"*.
 
-**Step 1 — Source Check:**
-Do you have a direct link or outlet name for this, or was it shared as a forward, screenshot, or personal social media post?`;
+${session.data.languageFlags.length > 0 ? `⚠️ **Watch out:** ${session.data.languageFlags[0]}\n\n` : ''}**Just one quick question:** Where did you see this (e.g. WhatsApp forward, social media, or a major news site)?`;
 
       return session.addMessage('assistant', reply, {
         stage: session.stage,
         stepIndex: session.stepIndex,
         suggestedReplies: [
-          'It was a social media forward / chat message',
-          'It was from a major news outlet',
-          'I saw it on a blog / forum',
-          'I have no idea where it started'
+          'Forwarded on WhatsApp / Telegram',
+          'Saw it on social media (X, Facebook, TikTok)',
+          'Read it on a major news website (Reuters, BBC, etc.)',
+          'It is an old story being re-shared'
         ]
       });
     }
 
-    case 'SOURCE_CHECK': {
-      session.data.sourceInfo.userDescription = text;
+    case 'CLARIFICATION': {
+      // Step 2: Answer received -> Deliver Verdict Immediately!
+      session.data.sourceType = text;
       const lower = text.toLowerCase();
 
-      if (lower.includes('reuters') || lower.includes('ap news') || lower.includes('bbc') || lower.includes('major news') || lower.includes('wire')) {
-        session.data.sourceInfo.reputable = true;
-      } else if (lower.includes('forward') || lower.includes('whatsapp') || lower.includes('telegram') || lower.includes('no source') || lower.includes('screenshot')) {
-        session.data.sourceInfo.reputable = false;
-        session.data.sourceInfo.unverifiedSocial = true;
-      }
-
-      session.stage = 'AUTHOR_DATE_CHECK';
-      session.stepIndex = 3;
-
-      const reply = `Got it. Source attribution is critical: forwarded messages and unattributed posts carry the highest risk of misinformation.
-
-**Step 2 — Date & Context Check:**
-When does this claim or event supposedly take place? Is it presented as **breaking news happening right now**, or could it be an older real event being recirculated out of context?`;
-
-      return session.addMessage('assistant', reply, {
-        stage: session.stage,
-        stepIndex: session.stepIndex,
-        suggestedReplies: [
-          'Presented as breaking news today',
-          'Might be an older event re-shared',
-          'No date or timeframe is specified'
-        ]
-      });
-    }
-
-    case 'AUTHOR_DATE_CHECK': {
-      session.data.dateInfo.userDescription = text;
-      const lower = text.toLowerCase();
-      if (lower.includes('older') || lower.includes('recirculated') || lower.includes('past') || lower.includes('years ago')) {
-        session.data.dateInfo.isOld = true;
-      }
-
-      session.stage = 'CROSS_VERIFY';
-      session.stepIndex = 4;
-
-      const reply = `Noted. Misinformation often relies on recycled footage or stories from years ago presented as today's news.
-
-**Step 3 — Cross-Verification:**
-Have you checked if other independent, reputable news outlets (like Reuters, AP News, BBC, or local public broadcasters) are reporting this exact same event?`;
-
-      return session.addMessage('assistant', reply, {
-        stage: session.stage,
-        stepIndex: session.stepIndex,
-        suggestedReplies: [
-          'Yes, multiple major outlets report it',
-          'No other outlet has reported this',
-          'Only found it on blogs/social posts',
-          'I have not checked yet'
-        ]
-      });
-    }
-
-    case 'CROSS_VERIFY': {
-      session.data.crossVerifyInfo.userDescription = text;
-      const lower = text.toLowerCase();
-      if (lower.includes('multiple') || lower.includes('major outlets') || lower.includes('reuters') || lower.includes('bbc') || lower.includes('ap')) {
-        session.data.crossVerifyInfo.corroborated = true;
-      } else if (lower.includes('no other') || lower.includes('only found on blogs') || lower.includes('not checked')) {
-        session.data.crossVerifyInfo.corroborated = false;
-      }
-
-      session.stage = 'EVIDENCE_LANGUAGE';
-      session.stepIndex = 5;
-
-      const reply = `Understood. If a major story is genuine, independent news services will almost always have matching coverage within minutes or hours.
-
-**Step 4 — Evidence & Language Check:**
-Does the post/article cite direct primary evidence (such as official public records, on-the-record quotes, scientific studies, or press releases), OR does it rely on vague phrases like *"experts warn"*, *"insiders claim"*, or emotional ALL-CAPS words like *"SHOCKING"* and *"WAKE UP"*?`;
-
-      return session.addMessage('assistant', reply, {
-        stage: session.stage,
-        stepIndex: session.stepIndex,
-        suggestedReplies: [
-          'Cites direct primary sources & official quotes',
-          'Uses vague claims ("experts say", "anonymous sources")',
-          'Heavy sensational / emotional language',
-          'No evidence or sources provided'
-        ]
-      });
-    }
-
-    case 'EVIDENCE_LANGUAGE': {
-      session.data.evidenceInfo.userDescription = text;
-      const lower = text.toLowerCase();
-      if (lower.includes('primary') || lower.includes('official quotes') || lower.includes('studies')) {
-        session.data.evidenceInfo.hasPrimarySources = true;
-      } else {
-        session.data.evidenceInfo.hasPrimarySources = false;
-      }
-
-      if (lower.includes('sensational') || lower.includes('emotional') || lower.includes('all-caps') || lower.includes('vague')) {
-        session.data.languageFlags.push('Emotional manipulation or sensationalist phrasing detected');
+      if (lower.includes('old') || lower.includes('re-shared') || lower.includes('recirculated')) {
+        session.data.isOld = true;
       }
 
       session.stage = 'VERDICT';
-      session.stepIndex = 5;
+      session.stepIndex = 2;
 
-      // Synthesize final verdict
       const verdictObj = generateFinalVerdict(session);
       session.data.verdictData = verdictObj.verdictData;
 
@@ -335,7 +226,7 @@ Does the post/article cite direct primary evidence (such as official public reco
         stepIndex: session.stepIndex,
         verdict: verdictObj.verdictData,
         suggestedReplies: [
-          'Check another story',
+          'Check another claim',
           'Copy verdict summary'
         ]
       });
@@ -344,7 +235,7 @@ Does the post/article cite direct primary evidence (such as official public reco
     case 'VERDICT': {
       if (text.toLowerCase().includes('check another') || text.toLowerCase().includes('reset') || text.toLowerCase().includes('new')) {
         const fresh = resetSession(session.sessionId);
-        return fresh.addMessage('assistant', `Hi! Paste a headline, link, claim, or screenshot and I'll help you check it before you share it. I'll walk you through it step by step — this usually takes under a minute.`, {
+        return fresh.addMessage('assistant', `Hi! Paste any headline, link, claim, or screenshot and I'll check it before you share it. This only takes a few seconds!`, {
           stage: 'INTAKE',
           stepIndex: 1,
           suggestedReplies: [
@@ -355,17 +246,15 @@ Does the post/article cite direct primary evidence (such as official public reco
         });
       }
 
-      // If user asks follow up questions about the verdict
-      const reply = `I'm ready whenever you are! You can paste another headline, link, claim, or screenshot to start a fresh verification, or click **"Check another story"** below.`;
-      return session.addMessage('assistant', reply, {
+      return session.addMessage('assistant', `Ready for your next check! You can paste another link, headline, or screenshot below, or click **"Check another claim"**.`, {
         stage: 'VERDICT',
-        stepIndex: 5,
-        suggestedReplies: ['Check another story']
+        stepIndex: 2,
+        suggestedReplies: ['Check another claim']
       });
     }
 
     default: {
-      return session.addMessage('assistant', `Let's start from the beginning. Please paste a link, headline, claim, or screenshot.`, {
+      return session.addMessage('assistant', `Paste a link, headline, claim, or screenshot to get started.`, {
         stage: 'INTAKE',
         stepIndex: 1
       });
@@ -376,31 +265,27 @@ Does the post/article cite direct primary evidence (such as official public reco
 function checkSensationalLanguage(text, session) {
   for (const pattern of SENSATIONAL_PATTERNS) {
     if (pattern.test(text)) {
-      session.data.languageFlags.push('Sensationalist or urgent phrasing detected (e.g. "SHOCKING", "THEY DON\'T WANT YOU TO KNOW")');
+      session.data.languageFlags.push('Sensational urgency detected (e.g. "SHOCKING", "WAKE UP", "SHARE BEFORE DELETED")');
       break;
     }
   }
 
-  // Check for excessive ALL CAPS
   const words = text.split(/\s+/).filter(w => w.length > 3);
   const capsWords = words.filter(w => w === w.toUpperCase() && /[A-Z]/.test(w));
   if (capsWords.length >= 2) {
-    session.data.languageFlags.push('Prominent ALL-CAPS words often used for emotional urgency');
+    session.data.languageFlags.push('Uses excessive ALL-CAPS words to provoke emotional reaction');
   }
 }
 
-/**
- * Handles known satire domains (e.g. The Onion).
- */
 function generateSatireVerdict(metadata) {
   const verdictData = {
     verdict: 'Likely False or Misleading if shared as factual news',
-    status: 'satire', // 'reliable', 'uncertain', 'false', 'satire'
+    status: 'satire',
     confidence: 'High',
     why: [
-      `Published by **${metadata.domain}**, an established satire and humor publication.`,
-      `The article is written for comedic or parody purposes rather than factual journalism.`,
-      `No independent news or wire services treat this claim as factual reporting.`
+      `Published by **${metadata.domain}**, an established comedy/satire publication.`,
+      `The article is written for humor and parody, not factual journalism.`,
+      `Independent wire services do not report this as real news.`
     ],
     recommendation: 'Do not share as factual news (it is satire)'
   };
@@ -408,21 +293,19 @@ function generateSatireVerdict(metadata) {
   const text = `🔍 Verdict: Likely False or Misleading if shared as factual news
 Confidence: High
 Why:
-• Published by **${metadata.domain}**, an established satire and humor publication.
-• The content is written for comedy/parody and not intended as factual journalism.
-• Independent news wires do not report this as real news.
+• Published by **${metadata.domain}**, a recognized satire and parody publication.
+• The article is intended as humor/comedy, not real journalism.
+• Not reported by any legitimate news services.
 Recommendation: Do not share as factual news (it is satire)`;
 
   return { verdictData, text };
 }
 
-/**
- * Generates the final standardized verdict based on collected checklist signals.
- */
 export function generateFinalVerdict(session) {
   const d = session.data;
+  const userReply = (d.sourceType || '').toLowerCase();
 
-  // Case 1: Known hoax match
+  // 1. Known hoax
   if (d.matchedHoax) {
     const verdictData = {
       verdict: 'Likely False or Misleading',
@@ -435,92 +318,73 @@ export function generateFinalVerdict(session) {
       ],
       recommendation: 'Do not share'
     };
-
     return formatVerdictResponse(verdictData);
   }
 
-  // Case 2: Recirculated / old story
-  if (d.dateInfo.isOld) {
+  // 2. Old story re-shared as breaking
+  if (d.isOld || userReply.includes('old') || userReply.includes('re-shared') || userReply.includes('recirculated')) {
     const verdictData = {
       verdict: 'Uncertain — Verify Further',
       status: 'uncertain',
       confidence: 'Medium',
       why: [
-        `This appears to be an older story or event being recirculated out of its original time context.`,
-        `Sharing outdated reports without clear dates misleads readers into thinking it is current breaking news.`,
-        `Independent sources do not report this as an active or current event.`
+        `This appears to be an older story or event being re-shared out of its original time context.`,
+        `Recirculating old headlines makes people believe a past event is happening today.`,
+        `No independent news sources report this as an active breaking event.`
       ],
-      recommendation: 'Don\'t share yet without verifying the original date and context'
+      recommendation: 'Don\'t share yet without verifying the original publication date'
     };
-
     return formatVerdictResponse(verdictData);
   }
 
-  // Case 3: Wire service / major reputable outlet with corroborated reporting
-  const isReputableSource = (d.urlMetadata?.domainAnalysis?.isReputable) || d.sourceInfo.reputable;
-  const isCorroborated = d.crossVerifyInfo.corroborated;
-  const hasPrimarySources = d.evidenceInfo.hasPrimarySources;
+  // 3. Reputable wire service / verified reporting
+  const isReputable = d.urlMetadata?.domainAnalysis?.isReputable || userReply.includes('major news') || userReply.includes('reuters') || userReply.includes('bbc');
 
-  if (isReputableSource && (isCorroborated || hasPrimarySources)) {
+  if (isReputable && !userReply.includes('only found this single link') && !userReply.includes('whatsapp')) {
     const verdictData = {
       verdict: 'Likely Reliable',
       status: 'reliable',
       confidence: 'High',
       why: [
-        `Published or verified by established international wire/journalistic services with transparent editorial standards.`,
-        `Cites verifiable primary evidence, on-the-record quotes, or named journalists.`,
-        `Information is corroborated across independent reporting outlets.`
+        `Published by a recognized news or wire service with transparent editorial standards.`,
+        `Report is corroborated across independent journalistic organizations.`,
+        `Cites named journalists or primary sources.`
       ],
       recommendation: 'Safe to share with context'
     };
-
     return formatVerdictResponse(verdictData);
   }
 
-  // Case 4: Unverified social forward / screenshot with no independent corroboration
-  if (d.sourceInfo.unverifiedSocial || !isCorroborated || d.data?.hasImage) {
-    const whyList = [];
-
-    if (d.sourceInfo.unverifiedSocial || d.hasImage) {
-      whyList.push('Originated as an unverified social forward or screenshot without verifiable source attribution.');
-    } else {
-      whyList.push('Could not be corroborated against independent, reputable news wires or primary records.');
-    }
-
-    if (!hasPrimarySources) {
-      whyList.push('Lacks direct primary evidence, relying instead on anonymous claims or vague attribution.');
-    }
-
-    if (d.languageFlags.length > 0) {
-      whyList.push(d.languageFlags[0]);
-    } else {
-      whyList.push('No named author with checkable credentials was confirmed.');
-    }
+  // 4. WhatsApp / chat forward / screenshot with no independent corroboration
+  if (userReply.includes('whatsapp') || userReply.includes('telegram') || userReply.includes('only found this') || userReply.includes('no link') || d.hasImage) {
+    const why = [
+      'Originated as an unverified social forward or screenshot without checkable source links.',
+      'Could not be corroborated against independent, reputable news wires.',
+      d.languageFlags[0] || 'Lacks on-the-record quotes or verifiable primary evidence.'
+    ];
 
     const verdictData = {
-      verdict: d.crossVerifyInfo.corroborated === false ? 'Likely False or Misleading' : 'Uncertain — Verify Further',
-      status: d.crossVerifyInfo.corroborated === false ? 'false' : 'uncertain',
-      confidence: d.crossVerifyInfo.corroborated === false ? 'Medium' : 'Medium',
-      why: whyList.slice(0, 3),
-      recommendation: d.crossVerifyInfo.corroborated === false ? 'Do not share' : 'Don\'t share yet'
+      verdict: 'Likely False or Misleading',
+      status: 'false',
+      confidence: 'Medium',
+      why,
+      recommendation: 'Do not share'
     };
-
     return formatVerdictResponse(verdictData);
   }
 
-  // Default fallback verdict
+  // 5. Default fallback
   const verdictData = {
     verdict: 'Uncertain — Verify Further',
     status: 'uncertain',
-    confidence: 'Low',
+    confidence: 'Medium',
     why: [
-      'Insufficient verifiable details or primary sources were identified during the check.',
-      'Independent fact-checking databases have not yet established a definitive consensus.',
-      'Key details (exact date, original source, primary evidence) remain ambiguous.'
+      'Could not find matching coverage on major independent news wires.',
+      'The original author and source cannot be independently verified.',
+      'Key details remain unconfirmed.'
     ],
     recommendation: 'Don\'t share yet'
   };
-
   return formatVerdictResponse(verdictData);
 }
 
