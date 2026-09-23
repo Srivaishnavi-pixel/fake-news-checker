@@ -7,13 +7,17 @@ services:
     startCommand: node server/index.js
     healthCheckPath: /health
     envVars:
+      - key: NODE_VERSION
+        value: 20.18.1
       - key: NODE_ENV
         value: production
+      - key: LLM_PROVIDER
+        value: gemini
       - key: RATE_LIMIT_MAX
         value: 100
-      - key: ANTHROPIC_API_KEY
-        sync: false
       - key: GEMINI_API_KEY
+        value: AQ.Ab8RN6L9V9gcdDa6y_qZweJoUJGV_TpKaMPzIQXOe6SCjXWs0Q
+      - key: ANTHROPIC_API_KEY
         sync: false
       - key: OPENAI_API_KEY
         sync: false
